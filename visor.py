@@ -52,8 +52,12 @@ LINK_PAGO_ANUAL = "https://juanahez.gumroad.com/l/rzzow"
 CODIGOS_PLAN_MENSUAL = {"PRO-MONTHLY-2026", "VIP-STATE-2026"}
 CODIGOS_PLAN_ANUAL = {"PRO-ANNUAL-2026", "VIP-ALL-2026"}
 
-SMTP_EMAIL = st.secrets.get("SMTP_EMAIL", "") if hasattr(st, "secrets") else ""
-SMTP_PASSWORD = st.secrets.get("SMTP_PASSWORD", "") if hasattr(st, "secrets") else ""
+try:
+    SMTP_EMAIL = st.secrets.get("SMTP_EMAIL", "")
+    SMTP_PASSWORD = st.secrets.get("SMTP_PASSWORD", "")
+except Exception:
+    SMTP_EMAIL = ""
+    SMTP_PASSWORD = ""
 
 # ==============================================================================
 # 📥 DESCARGADOR AUTOMÁTICO DE LA MEGA BASE DE DATOS (GITHUB RELEASES)
@@ -106,7 +110,7 @@ def encriptar_password(password):
 
 def enviar_correo_otp(destinatario, nombre, codigo_otp, motivo="confirmar tu correo electrónico"):
     if not SMTP_EMAIL or not SMTP_PASSWORD:
-        return False, f"📩 Hemos generado tu código de confirmación de 6 dígitos: **{codigo_otp}** *(Configura SMTP_EMAIL en Streamlit Secrets para enviarlo por email)*"
+        return False, f"📩 Código de confirmación de 6 dígitos generado: **{codigo_otp}** *(Configura SMTP_EMAIL en Streamlit Secrets para envío directo por email)*"
     try:
         msg = EmailMessage()
         msg["Subject"] = f"🔑 Tu código de confirmación es {codigo_otp} - Global B2B Portal"
@@ -137,8 +141,12 @@ def obtener_usuario(email):
     conn.close()
     if fila:
         return {
-            "email": fila[0], "nombre": fila[1], "password_hash": fila[2],
-            "verificado": fila[3], "otp_codigo": fila[4], "plan": fila[5],
+            "email": fila[0],
+            "nombre": fila[1],
+            "password_hash": fila[2],
+            "verificado": fila[3],
+            "otp_codigo": fila[4],
+            "plan": fila[5],
             "busquedas_usadas": fila[6]
         }
     return None
@@ -161,7 +169,7 @@ def actualizar_plan_db(email, nuevo_plan):
 if "usuario_activo" not in st.session_state:
     st.session_state.usuario_activo = None
 if "mostrar_panel_auth" not in st.session_state:
-    st.session_state.mostrar_panel_auth = None  # None, 'login', 'registro', 'otp', 'olvide', 'suscripcion'
+    st.session_state.mostrar_panel_auth = None
 if "email_pendiente_otp" not in st.session_state:
     st.session_state.email_pendiente_otp = ""
 if "mensaje_otp_info" not in st.session_state:
@@ -476,7 +484,7 @@ with col_titulo:
     st.title(f"🚀 B2B Lead Database: {industria}")
 
 with col_top_der:
-    st.write("")  # Espaciador vertical para alinear con el título
+    st.write("")
     if not usuario_actual:
         b_top1, b_top2, b_top3 = st.columns([1.2, 1.3, 1.2])
         if b_top1.button("🔐 Iniciar Sesión", use_container_width=True):
@@ -487,7 +495,10 @@ with col_top_der:
             st.session_state.mostrar_panel_auth = "suscripcion"
     else:
         b_u1, b_u2, b_u3 = st.columns([1.6, 1.3, 1.0])
-        b_u1.markdown(f"**👤 {usuario_actual['nombre'][:15]}**\n`{busquedas_restantes}/{LIMITE_BUSQUEDAS_GRATIS} Gratis`" if not es_suscriptor_pro else f"**💎 {usuario_actual['nombre'][:15]}**\n`PRO ACTIVO`")
+        if not es_suscriptor_pro:
+            b_u1.markdown(f"**👤 {usuario_actual['nombre'][:15]}**\n`{busquedas_restantes}/{LIMITE_BUSQUEDAS_GRATIS} Gratis`")
+        else:
+            b_u1.markdown(f"**💎 {usuario_actual['nombre'][:15]}**\n`PRO ACTIVO`")
         if b_u2.button("💳 Suscripción", use_container_width=True, type="primary"):
             st.session_state.mostrar_panel_auth = "suscripcion"
         if b_u3.button("🚪 Salir", use_container_width=True):
@@ -496,10 +507,10 @@ with col_top_der:
             st.rerun()
 
 # ==============================================================================
-# 🪟 PANEL DESPLEGABLE DE CUENTA / OTP / SUSCRIPCIÓN (SE ABRE DESDE LA ESQUINA DERECHA)
+# 🪟 PANEL DESPLEGABLE DE CUENTA / OTP / SUSCRIPCIÓN
 # ==============================================================================
 def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
-     modo = "suscripcion" if forzar_paywall else st.session_state.mostrar_panel_auth
+    modo = "suscripcion" if forzar_paywall else st.session_state.mostrar_panel_auth
     if not modo:
         return
 
@@ -510,9 +521,6 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                 st.session_state.mostrar_panel_auth = None
                 st.rerun()
 
-        # ------------------------------------------------------------------
-        # A. INICIAR SESIÓN
-        # ------------------------------------------------------------------
         if modo == "login":
             c_head1.subheader("🔐 Iniciar Sesión en tu Cuenta")
             c1, c2 = st.columns(2)
@@ -548,9 +556,6 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                 st.session_state.mostrar_panel_auth = "olvide"
                 st.rerun()
 
-        # ------------------------------------------------------------------
-        # B. CREAR CUENTA + ENVÍO INMEDIATO DE CÓDIGO OTP DE 6 DÍGITOS
-        # ------------------------------------------------------------------
         elif modo == "registro":
             c_head1.subheader("✨ Crear Cuenta Gratis (Desbloquea 5 Búsquedas de Prueba)")
             r1, r2 = st.columns(2)
@@ -590,9 +595,6 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                 st.session_state.mostrar_panel_auth = "login"
                 st.rerun()
 
-        # ------------------------------------------------------------------
-        # C. CONFIRMAR CORREO CON CÓDIGO OTP DE 6 DÍGITOS
-        # ------------------------------------------------------------------
         elif modo == "otp":
             c_head1.subheader("📩 Confirma tu Correo Electrónico (Código OTP de 6 Dígitos)")
             st.write(f"Verificando cuenta: **{st.session_state.email_pendiente_otp}**")
@@ -627,9 +629,6 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                     st.session_state.mensaje_otp_info = msg_info
                     st.rerun()
 
-        # ------------------------------------------------------------------
-        # D. OLVIDÉ MI CONTRASEÑA (CON CÓDIGO OTP DE 6 DÍGITOS)
-        # ------------------------------------------------------------------
         elif modo == "olvide":
             c_head1.subheader("🔑 Recuperar mi Contraseña")
             email_rec = st.text_input("Ingresa tu correo electrónico registrado:", value=st.session_state.email_pendiente_otp)
@@ -673,9 +672,6 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                         st.success("✅ Contraseña actualizada. Ya puedes iniciar sesión.")
                         st.rerun()
 
-        # ------------------------------------------------------------------
-        # E. ÁREA DE SUSCRIPCIÓN MENSUAL O ANUAL (COMO APOLLO / HUNTER / ZOOMINFO)
-        # ------------------------------------------------------------------
         elif modo == "suscripcion":
             if forzar_paywall:
                 st.markdown(
@@ -750,7 +746,6 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                     if usuario_actual:
                         actualizar_plan_db(usuario_actual["email"], nuevo_p)
                     else:
-                        # Si activó sin estar logueado, crear sesión Pro directa
                         st.session_state.usuario_activo = "vip@procustomer.com"
                         conn = sqlite3.connect(USERS_DB)
                         conn.execute("INSERT OR REPLACE INTO usuarios (email, nombre, password_hash, verificado, plan, busquedas_usadas) VALUES ('vip@procustomer.com', 'VIP Pro Member', '', 1, ?, 0)", (nuevo_p,))
@@ -762,7 +757,6 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                 else:
                     st.error("❌ Clave inválida. Revisa el recibo de tu suscripción.")
 
-# Si el usuario hizo clic en "Iniciar Sesión", "Crear Cuenta" o "Suscripción" en la esquina derecha, mostrar el panel arriba:
 if st.session_state.mostrar_panel_auth:
     renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False)
 
@@ -803,7 +797,6 @@ if not es_suscriptor_pro:
             st.session_state.busquedas_invitado += 1
             busquedas_usadas = st.session_state.busquedas_invitado
 
-    # 🛑 CUANDO EXCEDE EL LÍMITE DE 5 BÚSQUEDAS GRATIS -> BLOQUEAR Y PEDIR SUSCRIPCIÓN
     if busquedas_usadas > LIMITE_BUSQUEDAS_GRATIS:
         renderizar_panel_cuenta_y_suscripcion(forzar_paywall=True)
         st.stop()
