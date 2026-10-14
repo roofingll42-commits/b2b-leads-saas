@@ -1,9 +1,36 @@
-﻿import streamlit as st
+import streamlit as st
 import sqlite3
 import pandas as pd
 import re
+import os
+import requests
 
 st.set_page_config(page_title="Global B2B Intelligence Portal", layout="wide")
+
+# ==============================================================================
+# 📥 DESCARGADOR AUTOMÁTICO DE LA MEGA BASE DE DATOS (PARA LA NUBE)
+# ==============================================================================
+DB_MEGA_PATH = "mega_base_b2b.db"
+
+if not os.path.exists(DB_MEGA_PATH):
+    st.info("⏳ Descargando la base de datos masiva en la nube (esto solo ocurre la primera vez)...")
+    
+    # PEGA AQUÍ TU ENLACE DE DESCARGA DIRECTA DE ONEDRIVE
+    ENLACE_DIRECTO_DB = "https://1drv.ms/u/c/9e146ce635f42b44/IQCE-6Bb_Xw2RJrkBdypXnCDAT-qqll-NcBgt4_TQLQYuc4&download=1"
+    
+    try:
+        response = requests.get(ENLACE_DIRECTO_DB, stream=True)
+        if response.status_code == 200:
+            with open(DB_MEGA_PATH, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            st.success("¡Base de datos descargada con éxito! Actualizando la app...")
+            st.rerun()
+        else:
+            st.error("No se pudo descargar la base de datos automáticamente. Verifica el enlace.")
+    except Exception as e:
+        st.error(f"Error en la descarga: {e}")
 
 # ==============================================================================
 # 📋 LISTADO COMPLETO DE LAS 95 INDUSTRIAS EXACTAS
@@ -103,7 +130,6 @@ def indexar_y_unificar_rubros_sql():
         c.execute("CREATE INDEX IF NOT EXISTS idx_ind ON leads_b2b(industry)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_sub ON leads_b2b(sub_category)")
 
-        # Si el nombre de uno de los 95 rubros está en sub_category, copiarlo también a industry
         placeholders = ",".join(["?"] * len(RUBROS_95))
         c.execute(f"""
             UPDATE leads_b2b
@@ -112,7 +138,6 @@ def indexar_y_unificar_rubros_sql():
               AND (industry IS NULL OR industry != sub_category)
         """, RUBROS_95)
 
-        # Mapear categorías generales restantes a su rubro exacto en SQL puro (instantáneo)
         mapeos_sql = [
             ("HVAC & Plumbing", "Plumbing Service", "%plumb%"),
             ("HVAC & Plumbing", "HVAC Repair", "%"),
@@ -166,7 +191,7 @@ def indexar_y_unificar_rubros_sql():
 indexar_y_unificar_rubros_sql()
 
 # ==============================================================================
-# 📊 CONTADOR GLOBAL Y POR CATEGORÍA EN TIEMPO REAL (SUMA AMBAS COLUMNAS)
+# 📊 CONTADOR GLOBAL Y POR CATEGORÍA EN TIEMPO REAL
 # ==============================================================================
 def obtener_conteos_en_vivo():
     conteos = {r: 0 for r in RUBROS_95}
@@ -186,7 +211,6 @@ def obtener_conteos_en_vivo():
         conn2 = sqlite3.connect("mega_base_b2b.db")
         total_mega = conn2.execute("SELECT COUNT(*) FROM leads_b2b").fetchone()[0]
 
-        # Contar por industry y sub_category unificados
         filas_ind = conn2.execute("""
             SELECT COALESCE(NULLIF(sub_category, ''), industry) AS cat, COUNT(*)
             FROM leads_b2b
@@ -196,7 +220,6 @@ def obtener_conteos_en_vivo():
             if cat_name in conteos:
                 conteos[cat_name] += cant
 
-        # Respaldo directo por industry si difiere de sub_category
         filas_ind2 = conn2.execute("""
             SELECT industry, COUNT(*)
             FROM leads_b2b
@@ -218,7 +241,7 @@ def obtener_conteos_en_vivo():
 total_general_en_vivo, conteos_por_industria = obtener_conteos_en_vivo()
 
 # ==============================================================================
-# 🏢 MENÚ LATERAL CON CANTIDAD EXACTA DE PERFILES VERIFICADOS
+# 🏢 MENÚ LATERAL
 # ==============================================================================
 st.sidebar.title("🏢 Select Industry (96 Total)")
 
@@ -254,7 +277,7 @@ industria = st.sidebar.radio(
 st.title(f"🚀 B2B Lead Database: {industria}")
 
 # ==============================================================================
-# 1. VISTA TRUCKING & LOGISTICS (FMCSA - 111,073 CARRIERS)
+# 1. VISTA TRUCKING & LOGISTICS (FMCSA)
 # ==============================================================================
 if industria == "Trucking & Logistics (FMCSA)":
     st.markdown(
@@ -331,7 +354,7 @@ if industria == "Trucking & Logistics (FMCSA)":
     st.dataframe(df, use_container_width=True, height=450)
 
 # ==============================================================================
-# 2. VISTA PARA LAS 95 INDUSTRIAS Y BÚSQUEDA GLOBAL (100% VERIFICADOS)
+# 2. VISTA PARA LAS 95 INDUSTRIAS Y BÚSQUEDA GLOBAL
 # ==============================================================================
 else:
     st.markdown(
@@ -356,7 +379,6 @@ else:
             ).fetchall()
         ]
 
-    # --- PANEL DE BÚSQUEDA AVANZADA DE 6 CAMPOS ---
     st.markdown("##### 🔎 Búsqueda Avanzada por Perfil Específico")
     f1, f2, f3 = st.columns(3)
     b_empresa = f1.text_input("🏢 Company Name:", placeholder="Ej: Drain Genie, Signature Plumbing...")
@@ -408,7 +430,6 @@ else:
     where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
     total_matching_ind = cursor.execute(f"SELECT COUNT(*) FROM leads_b2b {where_sql}", params).fetchone()[0]
 
-    # Mostramos la métrica arriba conectada directamente al conteo real de perfiles verificados
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Verified Unique Businesses", f"{total_matching_ind:,} Verified")
     m2.metric("Geographic Coverage", f"{len(estados_ind) if estados_ind else 50} US States Active")
