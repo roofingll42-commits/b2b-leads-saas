@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 import re
 import os
+import tempfile
 import random
 import hashlib
 import smtplib
@@ -81,36 +82,62 @@ if not os.path.exists(DB_MEGA_PATH):
         st.error(f"Error en la descarga: {e}")
 
 # ==============================================================================
-# 🔐 BASE DE DATOS DE USUARIOS, OTP DE 6 DÍGITOS Y SUSCRIPCIONES
+# 🔐 BASE DE DATOS DE USUARIOS BLINDADA (ANTI-OPERATIONAL ERROR EN LA NUBE)
 # ==============================================================================
-USERS_DB = "usuarios_saas.db"
+def obtener_ruta_db_usuarios():
+    """Garantiza una ruta con permisos de lectura/escritura en Streamlit Cloud."""
+    ruta_local = "usuarios_saas_v2.db"
+    try:
+        conn = sqlite3.connect(ruta_local, timeout=15)
+        conn.execute("CREATE TABLE IF NOT EXISTS test_perm (id INT)")
+        conn.close()
+        return ruta_local
+    except Exception:
+        return os.path.join(tempfile.gettempdir(), "usuarios_saas_v2.db")
 
-def inicializar_db_usuarios():
-    conn = sqlite3.connect(USERS_DB)
+USERS_DB = obtener_ruta_db_usuarios()
+
+def conectar_db_usuarios():
+    """Abre la conexión y asegura que la tabla y TODAS sus columnas existan siempre."""
+    conn = sqlite3.connect(USERS_DB, timeout=20, check_same_thread=False)
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             email TEXT PRIMARY KEY,
-            nombre TEXT,
-            password_hash TEXT,
+            nombre TEXT DEFAULT 'Usuario',
+            password_hash TEXT DEFAULT '',
             verificado INTEGER DEFAULT 0,
-            otp_codigo TEXT,
+            otp_codigo TEXT DEFAULT '',
             plan TEXT DEFAULT 'free',
             busquedas_usadas INTEGER DEFAULT 0,
             fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Verificar que no falte ninguna columna si había una tabla anterior
+    cols_existentes = {col[1] for col in c.execute("PRAGMA table_info(usuarios)").fetchall()}
+    columnas_requeridas = {
+        "nombre": "TEXT DEFAULT 'Usuario'",
+        "password_hash": "TEXT DEFAULT ''",
+        "verificado": "INTEGER DEFAULT 0",
+        "otp_codigo": "TEXT DEFAULT ''",
+        "plan": "TEXT DEFAULT 'free'",
+        "busquedas_usadas": "INTEGER DEFAULT 0"
+    }
+    for col_nom, col_tipo in columnas_requeridas.items():
+        if col_nom not in cols_existentes:
+            try:
+                c.execute(f"ALTER TABLE usuarios ADD COLUMN {col_nom} {col_tipo}")
+            except Exception:
+                pass
     conn.commit()
-    conn.close()
-
-inicializar_db_usuarios()
+    return conn
 
 def encriptar_password(password):
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hashlib.sha256(str(password).encode("utf-8")).hexdigest()
 
 def enviar_correo_otp(destinatario, nombre, codigo_otp, motivo="confirmar tu correo electrónico"):
     if not SMTP_EMAIL or not SMTP_PASSWORD:
-        return False, f"📩 Código de confirmación de 6 dígitos generado: **{codigo_otp}** *(Configura SMTP_EMAIL en Streamlit Secrets para envío directo por email)*"
+        return False, f"📩 Código OTP de 6 dígitos generado para tu cuenta: **{codigo_otp}** *(Cópialo y pégalo abajo para confirmar tu correo)*"
     try:
         msg = EmailMessage()
         msg["Subject"] = f"🔑 Tu código de confirmación es {codigo_otp} - Global B2B Portal"
@@ -127,41 +154,50 @@ def enviar_correo_otp(destinatario, nombre, codigo_otp, motivo="confirmar tu cor
             server.send_message(msg)
         return True, f"✅ Enviamos un código de 6 dígitos a **{destinatario}**. Revisa tu bandeja de entrada o Spam."
     except Exception as e:
-        return False, f"Aviso SMTP ({e}). Tu código OTP de 6 dígitos es: **{codigo_otp}**"
+        return False, f"📩 Tu código OTP de confirmación de 6 dígitos es: **{codigo_otp}** *(Aviso SMTP: {e})*"
 
 def obtener_usuario(email):
     if not email:
         return None
-    conn = sqlite3.connect(USERS_DB)
-    c = conn.cursor()
-    fila = c.execute(
-        "SELECT email, nombre, password_hash, verificado, otp_codigo, plan, busquedas_usadas FROM usuarios WHERE email = ?",
-        (email.lower().strip(),)
-    ).fetchone()
-    conn.close()
-    if fila:
-        return {
-            "email": fila[0],
-            "nombre": fila[1],
-            "password_hash": fila[2],
-            "verificado": fila[3],
-            "otp_codigo": fila[4],
-            "plan": fila[5],
-            "busquedas_usadas": fila[6]
-        }
+    try:
+        conn = conectar_db_usuarios()
+        c = conn.cursor()
+        fila = c.execute(
+            "SELECT email, nombre, password_hash, verificado, otp_codigo, plan, busquedas_usadas FROM usuarios WHERE email = ?",
+            (email.lower().strip(),)
+        ).fetchone()
+        conn.close()
+        if fila:
+            return {
+                "email": fila[0],
+                "nombre": fila[1] or "Usuario",
+                "password_hash": fila[2] or "",
+                "verificado": int(fila[3] or 0),
+                "otp_codigo": str(fila[4] or ""),
+                "plan": fila[5] or "free",
+                "busquedas_usadas": int(fila[6] or 0)
+            }
+    except Exception:
+        pass
     return None
 
 def incrementar_busqueda_db(email):
-    conn = sqlite3.connect(USERS_DB)
-    conn.execute("UPDATE usuarios SET busquedas_usadas = busquedas_usadas + 1 WHERE email = ?", (email.lower().strip(),))
-    conn.commit()
-    conn.close()
+    try:
+        conn = conectar_db_usuarios()
+        conn.execute("UPDATE usuarios SET busquedas_usadas = COALESCE(busquedas_usadas, 0) + 1 WHERE email = ?", (email.lower().strip(),))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 def actualizar_plan_db(email, nuevo_plan):
-    conn = sqlite3.connect(USERS_DB)
-    conn.execute("UPDATE usuarios SET plan = ? WHERE email = ?", (nuevo_plan, email.lower().strip()))
-    conn.commit()
-    conn.close()
+    try:
+        conn = conectar_db_usuarios()
+        conn.execute("UPDATE usuarios SET plan = ? WHERE email = ?", (nuevo_plan, email.lower().strip()))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 # ==============================================================================
 # 🧠 VARIABLES DE SESIÓN (VISITANTE / USUARIO LOGUEADO / CONTADOR DE BÚSQUEDAS)
@@ -534,7 +570,7 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                     st.error("❌ Correo o contraseña incorrectos.")
                 elif user["verificado"] == 0:
                     nuevo_otp = str(random.randint(100000, 999999))
-                    conn = sqlite3.connect(USERS_DB)
+                    conn = conectar_db_usuarios()
                     conn.execute("UPDATE usuarios SET otp_codigo = ? WHERE email = ?", (nuevo_otp, user["email"]))
                     conn.commit()
                     conn.close()
@@ -574,22 +610,25 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                     st.error("⚠️ La contraseña debe tener al menos 6 caracteres.")
                 elif pass_reg1 != pass_reg2:
                     st.error("⚠️ Las contraseñas no coinciden.")
-                elif obtener_usuario(email_clean):
-                    st.error("⚠️ Este correo ya está registrado. Inicia sesión.")
                 else:
+                    existente = obtener_usuario(email_clean)
                     codigo_otp = str(random.randint(100000, 999999))
-                    conn = sqlite3.connect(USERS_DB)
-                    conn.execute(
-                        "INSERT INTO usuarios (email, nombre, password_hash, verificado, otp_codigo, plan, busquedas_usadas) VALUES (?, ?, ?, 0, ?, 'free', 0)",
-                        (email_clean, nombre_reg.strip(), encriptar_password(pass_reg1), codigo_otp)
-                    )
-                    conn.commit()
-                    conn.close()
-                    _, msg_info = enviar_correo_otp(email_clean, nombre_reg.strip(), codigo_otp, "confirmar tu cuenta")
-                    st.session_state.email_pendiente_otp = email_clean
-                    st.session_state.mensaje_otp_info = msg_info
-                    st.session_state.mostrar_panel_auth = "otp"
-                    st.rerun()
+                    conn = conectar_db_usuarios()
+                    if existente and existente["verificado"] == 1:
+                        conn.close()
+                        st.error("⚠️ Este correo ya está registrado. Haz clic en Iniciar Sesión.")
+                    else:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO usuarios (email, nombre, password_hash, verificado, otp_codigo, plan, busquedas_usadas) VALUES (?, ?, ?, 0, ?, 'free', 0)",
+                            (email_clean, nombre_reg.strip(), encriptar_password(pass_reg1), codigo_otp)
+                        )
+                        conn.commit()
+                        conn.close()
+                        _, msg_info = enviar_correo_otp(email_clean, nombre_reg.strip(), codigo_otp, "confirmar tu cuenta")
+                        st.session_state.email_pendiente_otp = email_clean
+                        st.session_state.mensaje_otp_info = msg_info
+                        st.session_state.mostrar_panel_auth = "otp"
+                        st.rerun()
 
             if br2.button("🔐 Ya tengo cuenta (Iniciar Sesión)", use_container_width=True):
                 st.session_state.mostrar_panel_auth = "login"
@@ -606,8 +645,8 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
             if bo1.button("✅ Confirmar Código OTP y Activar Cuenta", type="primary", use_container_width=True):
                 user = obtener_usuario(st.session_state.email_pendiente_otp)
                 if user and otp_in.strip() == user["otp_codigo"]:
-                    conn = sqlite3.connect(USERS_DB)
-                    conn.execute("UPDATE usuarios SET verificado = 1, otp_codigo = NULL WHERE email = ?", (user["email"],))
+                    conn = conectar_db_usuarios()
+                    conn.execute("UPDATE usuarios SET verificado = 1, otp_codigo = '' WHERE email = ?", (user["email"],))
                     conn.commit()
                     conn.close()
                     st.session_state.usuario_activo = user["email"]
@@ -621,7 +660,7 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                 user = obtener_usuario(st.session_state.email_pendiente_otp)
                 if user:
                     nuevo_otp = str(random.randint(100000, 999999))
-                    conn = sqlite3.connect(USERS_DB)
+                    conn = conectar_db_usuarios()
                     conn.execute("UPDATE usuarios SET otp_codigo = ? WHERE email = ?", (nuevo_otp, user["email"]))
                     conn.commit()
                     conn.close()
@@ -638,7 +677,7 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                     st.error("❌ Ese correo no está registrado en el sistema.")
                 else:
                     nuevo_otp = str(random.randint(100000, 999999))
-                    conn = sqlite3.connect(USERS_DB)
+                    conn = conectar_db_usuarios()
                     conn.execute("UPDATE usuarios SET otp_codigo = ? WHERE email = ?", (nuevo_otp, user["email"]))
                     conn.commit()
                     conn.close()
@@ -660,9 +699,9 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                     elif len(np1) < 6 or np1 != np2:
                         st.error("⚠️ Las contraseñas deben coincidir y tener mínimo 6 caracteres.")
                     else:
-                        conn = sqlite3.connect(USERS_DB)
+                        conn = conectar_db_usuarios()
                         conn.execute(
-                            "UPDATE usuarios SET password_hash = ?, verificado = 1, otp_codigo = NULL WHERE email = ?",
+                            "UPDATE usuarios SET password_hash = ?, verificado = 1, otp_codigo = '' WHERE email = ?",
                             (encriptar_password(np1), user["email"])
                         )
                         conn.commit()
@@ -747,7 +786,7 @@ def renderizar_panel_cuenta_y_suscripcion(forzar_paywall=False):
                         actualizar_plan_db(usuario_actual["email"], nuevo_p)
                     else:
                         st.session_state.usuario_activo = "vip@procustomer.com"
-                        conn = sqlite3.connect(USERS_DB)
+                        conn = conectar_db_usuarios()
                         conn.execute("INSERT OR REPLACE INTO usuarios (email, nombre, password_hash, verificado, plan, busquedas_usadas) VALUES ('vip@procustomer.com', 'VIP Pro Member', '', 1, ?, 0)", (nuevo_p,))
                         conn.commit()
                         conn.close()
